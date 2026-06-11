@@ -184,7 +184,10 @@ def record_sale(item_id, event_id, quantity, price, sold_by):
         "INSERT INTO sales (item_id, event_id, quantity, price, sold_by, sold_at) VALUES (?,?,?,?,?,?)",
         (item_id, event_id, quantity, price, sold_by, datetime.now().isoformat())
     )
-    update_stock(item_id, -quantity)
+    conn.execute(
+        "UPDATE items SET stock = MAX(0, stock - ?) WHERE id=?",
+        (quantity, item_id)
+    )
     conn.commit()
     conn.close()
 
