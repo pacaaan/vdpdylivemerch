@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 BOT_TOKEN  = os.environ["BOT_TOKEN"]
-CHANNEL_ID = int(os.environ["CHANNEL_ID"])   # -100xxxxxxxxxx
+CHANNEL_ID = int(os.environ["CHANNEL_ID"])
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
@@ -27,16 +27,18 @@ dp  = Dispatcher(storage=MemoryStorage())
 # ── FSM states ────────────────────────────────────────────────────────────────
 
 class SaleFlow(StatesGroup):
-    choose_event = State()
-    choose_item  = State()
-    confirm      = State()
+    choose_event    = State()
+    choose_type     = State()
+    choose_subgroup = State()
+    choose_size     = State()
+    confirm         = State()
 
 class AddItemFlow(StatesGroup):
-    name   = State()
-    color  = State()
-    size   = State()
-    price  = State()
-    stock  = State()
+    category = State()
+    subgroup = State()
+    size     = State()
+    price    = State()
+    stock    = State()
 
 class AddEventFlow(StatesGroup):
     name = State()
@@ -49,7 +51,6 @@ class StockFlow(StatesGroup):
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def kb(*rows):
-    """rows = list of list of (text, callback_data)"""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
@@ -59,52 +60,51 @@ def kb(*rows):
 
 
 def item_label(item) -> str:
-    parts = [item["name"]]
-    if item["color"]:
-        parts.append(item["color"])
+    parts = [item["category"], item["subgroup"]]
     if item["size"]:
         parts.append(item["size"])
-    parts.append(f"[{item['stock']} шт]")
+    parts.append(f"[{item['stock']}]")
+    return " · ".join(parts)
+
+
+def variant_label(item) -> str:
+    parts = [item["category"], item["subgroup"]]
+    if item["size"]:
+        parts.append(item["size"])
     return " · ".join(parts)
 
 
 def event_keyboard():
     events = db.get_all_events()
-    rows = [[( e["name"], f"event:{e['id']}" )] for e in events]
+    rows = [[(e["name"], f"event:{e['id']}")] for e in events]
     rows.append([("❌ Отмена", "cancel")])
     return kb(*rows)
 
 
-def items_keyboard(page=0, page_size=8):
-    items = [i for i in db.get_all_items() if i["stock"] > 0]
-    start = page * page_size
-    chunk = items[start: start + page_size]
-
-    rows = []
-    for item in chunk:
-        rows.append([(item_label(item), f"item:{item['id']}")])
-
-    nav = []
-    if page > 0:
-        nav.append(("⬅️", f"page:{page-1}"))
-    if start + page_size < len(items):
-        nav.append(("➡️", f"page:{page+1}"))
-    if nav:
-        rows.append(nav)
-
+def type_keyboard(cats):
+    rows = [[(c, f"cat:{i}")] for i, c in enumerate(cats)]
     rows.append([("❌ Отмена", "cancel")])
+    return kb(*rows)
+
+
+def subgroup_keyboard(subs):
+    rows = [[(s[0], f"sub:{i}")] for i, s in enumerate(subs)]
+    rows.append([("⬅️ Назад", "back_types"), ("❌ Отмена", "cancel")])
+    return kb(*rows)
+
+
+def size_keyboard(sized):
+    rows = [[(f"{size} [{stock}]", f"item:{iid}")] for (iid, size, stock) in sized]
+    rows.append([("⬅️ Назад", "back_subs"), ("❌ Отмена", "cancel")])
     return kb(*rows)
 
 
 def all_items_keyboard(page=0, page_size=8):
-    """Все позиции, включая с нулевым остатком (для пополнения)"""
     items = db.get_all_items()
     start = page * page_size
     chunk = items[start: start + page_size]
 
-    rows = []
-    for item in chunk:
-        rows.append([(item_label(item), f"stockitem:{item['id']}")])
+    rows = [[(item_label(item), f"stockitem:{item['id']}")] for item in chunk]
 
     nav = []
     if page > 0:
@@ -121,8 +121,6 @@ def all_items_keyboard(page=0, page_size=8):
 async def push_stats():
     await update_channel_stats(bot, CHANNEL_ID)
 
-
-# ── main menu ─────────────────────────────────────────────────────────────────
 
 MAIN_KB = kb(
     [("🛍 Продал", "sell"), ("📦 Остатки", "view_stock")],
@@ -145,6 +143,13 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
+@dp.callback_query(F.data == "back_menu")
+async def cb_back_menu(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text("Выбери действие:", reply_markup=MAIN_KB)
+    await call.answer()
+
+
 # ── SELL flow ─────────────────────────────────────────────────────────────────
 
 @dp.callback_query(F.data == "sell")
@@ -157,23 +162,83 @@ async def cb_sell_start(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(SaleFlow.choose_event, F.data.startswith("event:"))
 async def cb_sell_event(call: CallbackQuery, state: FSMContext):
     event_id = int(call.data.split(":")[1])
-    await state.update_data(event_id=event_id, page=0)
-    await state.set_state(SaleFlow.choose_item)
-    await call.message.edit_text("Выбери позицию:", reply_markup=items_keyboard(0))
+    cats = db.sell_get_categories()
+    if not cats:
+        await state.clear()
+        await call.message.edit_text("Нет товара в наличии.", reply_markup=None)
+        await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+        await call.answer()
+        return
+    await state.update_data(event_id=event_id, cats=cats)
+    await state.set_state(SaleFlow.choose_type)
+    await call.message.edit_text("Выбери тип товара:", reply_markup=type_keyboard(cats))
     await call.answer()
 
 
-@dp.callback_query(SaleFlow.choose_item, F.data.startswith("page:"))
-async def cb_sell_page(call: CallbackQuery, state: FSMContext):
-    page = int(call.data.split(":")[1])
-    await state.update_data(page=page)
-    await call.message.edit_reply_markup(reply_markup=items_keyboard(page))
+async def _show_types(call, state):
+    data = await state.get_data()
+    await state.set_state(SaleFlow.choose_type)
+    await call.message.edit_text("Выбери тип товара:", reply_markup=type_keyboard(data["cats"]))
+
+
+@dp.callback_query(SaleFlow.choose_type, F.data.startswith("cat:"))
+async def cb_sell_type(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":")[1])
+    data = await state.get_data()
+    category = data["cats"][idx]
+    subs = db.sell_get_subgroups(category)
+    await state.update_data(category=category, subs=subs)
+    await state.set_state(SaleFlow.choose_subgroup)
+    await call.message.edit_text(f"{category} — выбери вариант:", reply_markup=subgroup_keyboard(subs))
     await call.answer()
 
 
-@dp.callback_query(SaleFlow.choose_item, F.data.startswith("item:"))
-async def cb_sell_item(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(SaleFlow.choose_subgroup, F.data == "back_types")
+async def cb_back_types(call: CallbackQuery, state: FSMContext):
+    await _show_types(call, state)
+    await call.answer()
+
+
+@dp.callback_query(SaleFlow.choose_subgroup, F.data.startswith("sub:"))
+async def cb_sell_subgroup(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":")[1])
+    data = await state.get_data()
+    subgroup, has_size = data["subs"][idx]
+    category = data["category"]
+
+    if has_size:
+        sized = db.sell_get_sized_items(category, subgroup)
+        await state.update_data(subgroup=subgroup, sized=sized)
+        await state.set_state(SaleFlow.choose_size)
+        await call.message.edit_text(
+            f"{category} · {subgroup} — выбери размер:",
+            reply_markup=size_keyboard(sized)
+        )
+    else:
+        term = db.sell_get_terminal_item(category, subgroup)
+        await _go_confirm(call, state, term["id"])
+    await call.answer()
+
+
+@dp.callback_query(SaleFlow.choose_size, F.data == "back_subs")
+async def cb_back_subs(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(SaleFlow.choose_subgroup)
+    await call.message.edit_text(
+        f"{data['category']} — выбери вариант:",
+        reply_markup=subgroup_keyboard(data["subs"])
+    )
+    await call.answer()
+
+
+@dp.callback_query(SaleFlow.choose_size, F.data.startswith("item:"))
+async def cb_sell_size(call: CallbackQuery, state: FSMContext):
     item_id = int(call.data.split(":")[1])
+    await _go_confirm(call, state, item_id)
+    await call.answer()
+
+
+async def _go_confirm(call, state, item_id):
     item = db.get_item(item_id)
     await state.update_data(item_id=item_id)
     await state.set_state(SaleFlow.confirm)
@@ -183,25 +248,22 @@ async def cb_sell_item(call: CallbackQuery, state: FSMContext):
     event_name = events.get(data["event_id"], "?")
 
     text = (
-        f"Подтверди продажу:\n\n"
-        f"Позиция: <b>{item_label(item)}</b>\n"
+        "Подтверди продажу:\n\n"
+        f"Позиция: <b>{variant_label(item)}</b>\n"
         f"Мероприятие: <b>{event_name}</b>\n"
-        f"Цена: <b>{item['price']:,} ₽</b>".replace(",", " ")
+        f"Цена: <b>{item['price']:,} ₽</b>".replace(",", " ") + "\n"
+        f"Остаток сейчас: {item['stock']} шт"
     )
     await call.message.edit_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=kb(
-            [("✅ Подтвердить", "confirm_sale"), ("❌ Отмена", "cancel")]
-        )
+        text, parse_mode="HTML",
+        reply_markup=kb([("✅ Подтвердить", "confirm_sale"), ("❌ Отмена", "cancel")])
     )
-    await call.answer()
 
 
 @dp.callback_query(SaleFlow.confirm, F.data == "confirm_sale")
 async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
-    data  = await state.get_data()
-    item  = db.get_item(data["item_id"])
+    data = await state.get_data()
+    item = db.get_item(data["item_id"])
     sold_by = call.from_user.first_name or call.from_user.username or "?"
 
     db.record_sale(
@@ -214,13 +276,11 @@ async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
     await state.clear()
 
     await call.message.edit_text(
-        f"✅ Продажа записана: <b>{item['name']}</b>\nОсталось: {item['stock'] - 1} шт",
-        parse_mode="HTML",
-        reply_markup=None
+        f"✅ Продажа записана: <b>{variant_label(item)}</b>\nОсталось: {max(0, item['stock'] - 1)} шт",
+        parse_mode="HTML", reply_markup=None
     )
     await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
     await call.answer()
-
     await push_stats()
 
 
@@ -231,35 +291,23 @@ async def cb_view_stock(call: CallbackQuery, state: FSMContext):
     rows = db.get_stats_by_item()
     lines = ["📦 <b>Остатки</b>\n"]
 
-    current_name = None
+    current_cat = None
     for r in rows:
-        if r["name"] != current_name:
-            if current_name:
+        if r["category"] != current_cat:
+            if current_cat:
                 lines.append("")
-            lines.append(f"<b>{r['name']}</b>")
-            current_name = r["name"]
-        variant_parts = []
-        if r["color"]:
-            variant_parts.append(r["color"])
+            lines.append(f"<b>{r['category']}</b>")
+            current_cat = r["category"]
+        label = r["subgroup"]
         if r["size"]:
-            variant_parts.append(r["size"])
-        variant = " / ".join(variant_parts) if variant_parts else "—"
+            label += f" · {r['size']}"
         stock_str = str(r["stock"]) if r["stock"] > 0 else "0 ⚠️"
-        lines.append(f"  {variant}: {stock_str} шт (продано {r['sold']})")
+        lines.append(f"  {label}: {stock_str} шт (продано {r['sold']})")
 
     await call.message.edit_text(
         "\n".join(lines), parse_mode="HTML",
-        reply_markup=kb(
-            [("🔧 Обновить остаток", "update_stock"), ("◀️ Меню", "back_menu")]
-        )
+        reply_markup=kb([("🔧 Обновить остаток", "update_stock"), ("◀️ Меню", "back_menu")])
     )
-    await call.answer()
-
-
-@dp.callback_query(F.data == "back_menu")
-async def cb_back_menu(call: CallbackQuery, state: FSMContext):
-    await state.clear()
-    await call.message.edit_text("Выбери действие:", reply_markup=MAIN_KB)
     await call.answer()
 
 
@@ -308,8 +356,7 @@ async def msg_stock_qty(message: Message, state: FSMContext):
 
     await message.answer(
         f"✅ Остаток обновлён: <b>{item_label(item)}</b>",
-        parse_mode="HTML",
-        reply_markup=MAIN_KB
+        parse_mode="HTML", reply_markup=MAIN_KB
     )
     await push_stats()
 
@@ -318,27 +365,26 @@ async def msg_stock_qty(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data == "add_item")
 async def cb_add_item(call: CallbackQuery, state: FSMContext):
-    await state.set_state(AddItemFlow.name)
+    await state.set_state(AddItemFlow.category)
     await call.message.edit_text(
-        "Новая позиция.\n\nВведи название (например: Футболка Депрессия):",
+        "Новая позиция.\n\nТип (Футболка / Кепка / Носки / Жетон / Стикерпак):",
         reply_markup=None
     )
     await call.answer()
 
 
-@dp.message(AddItemFlow.name)
-async def msg_item_name(message: Message, state: FSMContext):
-    await state.update_data(name=message.text.strip())
-    await state.set_state(AddItemFlow.color)
-    await message.answer("Цвет (или «-» если не нужен):")
+@dp.message(AddItemFlow.category)
+async def msg_item_category(message: Message, state: FSMContext):
+    await state.update_data(category=message.text.strip())
+    await state.set_state(AddItemFlow.subgroup)
+    await message.answer("Вариант (цвет или название, например «Депрессия черно-зеленая»):")
 
 
-@dp.message(AddItemFlow.color)
-async def msg_item_color(message: Message, state: FSMContext):
-    val = message.text.strip()
-    await state.update_data(color=val if val != "-" else "")
+@dp.message(AddItemFlow.subgroup)
+async def msg_item_subgroup(message: Message, state: FSMContext):
+    await state.update_data(subgroup=message.text.strip())
     await state.set_state(AddItemFlow.size)
-    await message.answer("Размер (или «-» если не нужен):")
+    await message.answer("Размер (M/L/XL/XXL или ЖЕН/МУЖ). Если размера нет — отправь «-»:")
 
 
 @dp.message(AddItemFlow.size)
@@ -372,13 +418,13 @@ async def msg_item_stock(message: Message, state: FSMContext):
         return
 
     data = await state.get_data()
-    db.add_item(data["name"], data.get("size"), data.get("color"), data["price"], stock)
+    db.add_item(data["category"], data["subgroup"], data.get("size"), data["price"], stock)
     await state.clear()
 
+    size_txt = f" · {data.get('size')}" if data.get("size") else ""
     await message.answer(
-        f"✅ Позиция добавлена:\n<b>{data['name']}</b> | {data.get('color','')} | {data.get('size','')} | {data['price']} ₽ | {stock} шт",
-        parse_mode="HTML",
-        reply_markup=MAIN_KB
+        f"✅ Добавлено: <b>{data['category']} · {data['subgroup']}{size_txt}</b> | {data['price']} ₽ | {stock} шт",
+        parse_mode="HTML", reply_markup=MAIN_KB
     )
     await push_stats()
 

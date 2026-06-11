@@ -18,9 +18,9 @@ def init_db():
     c.execute("""
         CREATE TABLE IF NOT EXISTS items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
+            category TEXT NOT NULL,
+            subgroup TEXT NOT NULL,
             size TEXT,
-            color TEXT,
             price INTEGER NOT NULL,
             stock INTEGER NOT NULL DEFAULT 0,
             active INTEGER NOT NULL DEFAULT 1
@@ -43,9 +43,7 @@ def init_db():
             quantity INTEGER NOT NULL DEFAULT 1,
             price INTEGER NOT NULL,
             sold_by TEXT,
-            sold_at TEXT NOT NULL,
-            FOREIGN KEY (item_id) REFERENCES items(id),
-            FOREIGN KEY (event_id) REFERENCES events(id)
+            sold_at TEXT NOT NULL
         )
     """)
 
@@ -69,39 +67,38 @@ def seed_initial_data():
         conn.close()
         return
 
-    items = [
-        ("Футболка VODOPADY", "XL",   "Серая",         2000, 2),
-        ("Футболка VODOPADY", "XXL",  "Серая",         2000, 2),
-        ("Футболка Депрессия", "M",   "Сливочная",     2000, 0),
-        ("Футболка Депрессия", "L",   "Сливочная",     2000, 0),
-        ("Футболка Депрессия", "XL",  "Сливочная",     2000, 0),
-        ("Футболка Депрессия", "XXL", "Сливочная",     2000, 0),
-        ("Футболка Депрессия", "M",   "Белая",         2000, 0),
-        ("Футболка Депрессия", "L",   "Белая",         2000, 0),
-        ("Футболка Депрессия", "XL",  "Белая",         2000, 0),
-        ("Футболка Депрессия", "XXL", "Белая",         2000, 0),
-        ("Футболка Депрессия", "M",   "Черно-зеленая", 2000, 0),
-        ("Футболка Депрессия", "L",   "Черно-зеленая", 2000, 0),
-        ("Футболка Депрессия", "XL",  "Черно-зеленая", 2000, 0),
-        ("Футболка Депрессия", "XXL", "Черно-зеленая", 2000, 0),
-        ("Футболка Депрессия", "M",   "Черно-розовая", 2000, 0),
-        ("Футболка Депрессия", "L",   "Черно-розовая", 2000, 0),
-        ("Футболка Депрессия", "XL",  "Черно-розовая", 2000, 0),
-        ("Футболка Депрессия", "XXL", "Черно-розовая", 2000, 0),
-        ("Кепка ХОУПКОР",     None,  "Серая",         2000, 10),
-        ("Кепка ХОУПКОР",     None,  "Фиолетовая",    2000, 5),
-        ("Кепка ХОУПКОР",     None,  "Розовая",       2000, 10),
-        ("Кепка ХОУПКОР",     None,  "Желтая",        2000, 5),
-        ("Носки ХОУПКОР",     None,  "Женские",       400,  50),
-        ("Носки ХОУПКОР",     None,  "Мужские",       400,  50),
-        ("Жетон Депрессия",   None,  None,            1000, 0),
-        ("Жетон ХОУПКОР",     None,  None,            1000, 0),
-        ("Стикерпак",         None,  "Белый",         300,  0),
-        ("Стикерпак",         None,  "Красный",       300,  0),
-    ]
+    items = []
+
+    def add(category, subgroup, sizes, price, stocks):
+        for size, st in zip(sizes, stocks):
+            items.append((category, subgroup, size, price, st))
+
+    # Размеры футболок: [M, L, XL, XXL]
+    TS = ["M", "L", "XL", "XXL"]
+    add("Футболка", "VODOPADY серая",            TS, 2000, [0, 0, 4, 2])
+    add("Футболка", "Депрессия бело-зеленая",    TS, 2000, [0, 0, 0, 4])
+    add("Футболка", "Депрессия сливочно-розовая",TS, 2000, [0, 0, 0, 6])
+    add("Футболка", "Депрессия черно-зеленая",   TS, 2000, [0, 1, 0, 0])
+    add("Футболка", "Депрессия черно-розовая",   TS, 2000, [0, 1, 2, 3])
+
+    add("Кепка", "розовая",    [None], 2000, [10])
+    add("Кепка", "серая",      [None], 2000, [10])
+    add("Кепка", "фиолетовая", [None], 2000, [5])
+    add("Кепка", "желтая",     [None], 2000, [5])
+
+    add("Стикерпак", "белый",   [None], 300, [6])
+    add("Стикерпак", "красный", [None], 300, [50])
+
+    # Размеры носков: [ЖЕН, МУЖ]
+    SOCK = ["ЖЕН", "МУЖ"]
+    add("Носки", "Травмы",  SOCK, 400, [0, 0])
+    add("Носки", "Хоупкор", SOCK, 400, [50, 50])
+
+    add("Жетон", "Хоупкор",   [None], 1000, [30])
+    add("Жетон", "Депрессия", [None], 1000, [3])
 
     c.executemany(
-        "INSERT INTO items (name, size, color, price, stock) VALUES (?,?,?,?,?)",
+        "INSERT INTO items (category, subgroup, size, price, stock) VALUES (?,?,?,?,?)",
         items
     )
 
@@ -117,7 +114,7 @@ def seed_initial_data():
 def get_all_items():
     conn = get_conn()
     rows = conn.execute(
-        "SELECT * FROM items WHERE active=1 ORDER BY name, color, size"
+        "SELECT * FROM items WHERE active=1 ORDER BY category, subgroup, size"
     ).fetchall()
     conn.close()
     return rows
@@ -130,22 +127,11 @@ def get_item(item_id):
     return row
 
 
-def add_item(name, size, color, price, stock):
+def add_item(category, subgroup, size, price, stock):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO items (name, size, color, price, stock) VALUES (?,?,?,?,?)",
-        (name, size or None, color or None, price, stock)
-    )
-    conn.commit()
-    conn.close()
-
-
-def update_stock(item_id, delta):
-    """delta negative = продажа, positive = пополнение"""
-    conn = get_conn()
-    conn.execute(
-        "UPDATE items SET stock = MAX(0, stock + ?) WHERE id=?",
-        (delta, item_id)
+        "INSERT INTO items (category, subgroup, size, price, stock) VALUES (?,?,?,?,?)",
+        (category, subgroup, size or None, price, stock)
     )
     conn.commit()
     conn.close()
@@ -156,6 +142,61 @@ def set_stock(item_id, stock):
     conn.execute("UPDATE items SET stock=? WHERE id=?", (stock, item_id))
     conn.commit()
     conn.close()
+
+
+# ---------- sell navigation ----------
+
+def sell_get_categories():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT category FROM items
+        WHERE active=1
+        GROUP BY category
+        HAVING SUM(stock) > 0
+        ORDER BY category
+    """).fetchall()
+    conn.close()
+    return [r["category"] for r in rows]
+
+
+def sell_get_subgroups(category):
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT subgroup,
+               MAX(CASE WHEN size IS NOT NULL THEN 1 ELSE 0 END) AS has_size
+        FROM items
+        WHERE active=1 AND category=?
+        GROUP BY subgroup
+        HAVING SUM(stock) > 0
+        ORDER BY subgroup
+    """, (category,)).fetchall()
+    conn.close()
+    return [(r["subgroup"], r["has_size"]) for r in rows]
+
+
+def sell_get_sized_items(category, subgroup):
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM items
+        WHERE active=1 AND category=? AND subgroup=? AND size IS NOT NULL AND stock>0
+        ORDER BY
+          CASE size
+            WHEN 'M' THEN 1 WHEN 'L' THEN 2 WHEN 'XL' THEN 3 WHEN 'XXL' THEN 4
+            WHEN 'ЖЕН' THEN 1 WHEN 'МУЖ' THEN 2 ELSE 99 END
+    """, (category, subgroup)).fetchall()
+    conn.close()
+    return [(r["id"], r["size"], r["stock"]) for r in rows]
+
+
+def sell_get_terminal_item(category, subgroup):
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT * FROM items
+        WHERE active=1 AND category=? AND subgroup=? AND size IS NULL AND stock>0
+        LIMIT 1
+    """, (category, subgroup)).fetchone()
+    conn.close()
+    return row
 
 
 # ---------- events ----------
@@ -207,7 +248,7 @@ def get_stats_overall():
 def get_stats_by_event():
     conn = get_conn()
     rows = conn.execute("""
-        SELECT e.name AS event, 
+        SELECT e.name AS event,
                COALESCE(SUM(s.quantity), 0) AS units,
                COALESCE(SUM(s.quantity * s.price), 0) AS revenue
         FROM events e
@@ -222,13 +263,13 @@ def get_stats_by_event():
 def get_stats_by_item():
     conn = get_conn()
     rows = conn.execute("""
-        SELECT i.name, i.color, i.size, i.stock,
+        SELECT i.category, i.subgroup, i.size, i.stock,
                COALESCE(SUM(s.quantity), 0) AS sold
         FROM items i
         LEFT JOIN sales s ON s.item_id = i.id
         WHERE i.active=1
         GROUP BY i.id
-        ORDER BY i.name, i.color, i.size
+        ORDER BY i.category, i.subgroup, i.size
     """).fetchall()
     conn.close()
     return rows
@@ -237,7 +278,7 @@ def get_stats_by_item():
 def get_last_sales(limit=10):
     conn = get_conn()
     rows = conn.execute("""
-        SELECT i.name, i.color, i.size, s.quantity, s.price,
+        SELECT i.category, i.subgroup, i.size, s.quantity, s.price,
                e.name AS event, s.sold_by, s.sold_at
         FROM sales s
         JOIN items i ON i.id = s.item_id
