@@ -151,6 +151,38 @@ def set_stock(item_id, stock):
     conn.close()
 
 
+def update_price(item_id, price):
+    conn = get_conn()
+    conn.execute("UPDATE items SET price=? WHERE id=?", (price, item_id))
+    conn.commit()
+    conn.close()
+
+
+def set_active(item_id, active):
+    conn = get_conn()
+    conn.execute("UPDATE items SET active=? WHERE id=?", (1 if active else 0, item_id))
+    conn.commit()
+    conn.close()
+
+
+def get_hidden_items():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT * FROM items WHERE active=0 ORDER BY category, subgroup, size"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_categories_all():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT category FROM items WHERE active=1 GROUP BY category ORDER BY category"
+    ).fetchall()
+    conn.close()
+    return [r["category"] for r in rows]
+
+
 # ---------- sell navigation ----------
 
 def sell_get_categories():

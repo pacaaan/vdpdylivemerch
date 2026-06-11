@@ -75,11 +75,12 @@ class SaleFlow(StatesGroup):
     confirm         = State()
 
 class AddItemFlow(StatesGroup):
-    category = State()
-    subgroup = State()
-    size     = State()
-    price    = State()
-    stock    = State()
+    category     = State()
+    category_new = State()
+    subgroup     = State()
+    size         = State()
+    price        = State()
+    stock        = State()
 
 class AddEventFlow(StatesGroup):
     name = State()
@@ -87,6 +88,17 @@ class AddEventFlow(StatesGroup):
 class StockFlow(StatesGroup):
     choose_item = State()
     enter_qty   = State()
+
+class PriceFlow(StatesGroup):
+    choose_item = State()
+    enter_price = State()
+
+class HideFlow(StatesGroup):
+    choose_item = State()
+    confirm     = State()
+
+class RestoreFlow(StatesGroup):
+    choose_item = State()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -141,22 +153,33 @@ def size_keyboard(sized):
 
 
 def all_items_keyboard(page=0, page_size=8):
-    items = db.get_all_items()
+    return items_picker_keyboard(db.get_all_items(), page, "stockitem", "stockpage", page_size)
+
+
+def items_picker_keyboard(items, page, item_prefix, page_prefix, page_size=8):
     start = page * page_size
     chunk = items[start: start + page_size]
 
-    rows = [[(item_label(item), f"stockitem:{item['id']}")] for item in chunk]
+    rows = [[(item_label(item), f"{item_prefix}:{item['id']}")] for item in chunk]
 
     nav = []
     if page > 0:
-        nav.append(("⬅️", f"stockpage:{page-1}"))
+        nav.append(("⬅️", f"{page_prefix}:{page-1}"))
     if start + page_size < len(items):
-        nav.append(("➡️", f"stockpage:{page+1}"))
+        nav.append(("➡️", f"{page_prefix}:{page+1}"))
     if nav:
         rows.append(nav)
 
     rows.append([("❌ Отмена", "cancel")])
     return kb(*rows)
+
+
+def add_category_keyboard():
+    cats = db.get_categories_all()
+    rows = [[(c, f"addcat:{i}")] for i, c in enumerate(cats)]
+    rows.append([("➕ Новый тип", "addcat_new")])
+    rows.append([("❌ Отмена", "cancel")])
+    return kb(*rows), cats
 
 
 async def push_stats():
@@ -167,8 +190,22 @@ MAIN_KB = kb(
     [("🛍 Продал", "sell"), ("💸 Скидка", "discount")],
     [("📦 Остатки", "view_stock")],
     [("➕ Добавить позицию", "add_item"), ("🎪 Добавить мероприятие", "add_event")],
+    [("⚙️ Управление каталогом", "manage")],
     [("📊 Обновить статистику", "refresh_stats")],
 )
+
+MANAGE_KB = kb(
+    [("💰 Изменить цену", "edit_price")],
+    [("🙈 Скрыть позицию", "hide_item"), ("👁 Вернуть скрытую", "restore_item")],
+    [("◀️ Меню", "back_menu")],
+)
+
+
+@dp.callback_query(F.data == "manage")
+async def cb_manage(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text("Управление каталогом:", reply_markup=MANAGE_KB)
+    await call.answer()
 
 
 @dp.message(Command("start", "menu"))
@@ -462,18 +499,44 @@ async def msg_stock_qty(message: Message, state: FSMContext):
 @dp.callback_query(F.data == "add_item")
 async def cb_add_item(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddItemFlow.category)
+    markup, cats = add_category_keyboard()
+    await state.update_data(addcats=cats)
     await call.message.edit_text(
-        "Новая позиция.\n\nТип (Футболка / Кепка / Носки / Жетон / Стикерпак):",
+        "Новая позиция.\n\nВыбери тип или создай новый:",
+        reply_markup=markup
+    )
+    await call.answer()
+
+
+@dp.callback_query(AddItemFlow.category, F.data.startswith("addcat:"))
+async def cb_add_item_cat_existing(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":")[1])
+    data = await state.get_data()
+    category = data["addcats"][idx]
+    await state.update_data(category=category)
+    await state.set_state(AddItemFlow.subgroup)
+    await call.message.edit_text(
+        f"Тип: <b>{category}</b>\n\nВариант (цвет или название, например «Депрессия черно-зеленая»):",
+        parse_mode="HTML", reply_markup=None
+    )
+    await call.answer()
+
+
+@dp.callback_query(AddItemFlow.category, F.data == "addcat_new")
+async def cb_add_item_cat_new(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AddItemFlow.category_new)
+    await call.message.edit_text(
+        "Введи название нового типа (например «Худи»):",
         reply_markup=None
     )
     await call.answer()
 
 
-@dp.message(AddItemFlow.category)
-async def msg_item_category(message: Message, state: FSMContext):
+@dp.message(AddItemFlow.category_new)
+async def msg_item_category_new(message: Message, state: FSMContext):
     await state.update_data(category=message.text.strip())
     await state.set_state(AddItemFlow.subgroup)
-    await message.answer("Вариант (цвет или название, например «Депрессия черно-зеленая»):")
+    await message.answer("Вариант (цвет или название):")
 
 
 @dp.message(AddItemFlow.subgroup)
@@ -522,6 +585,151 @@ async def msg_item_stock(message: Message, state: FSMContext):
         f"✅ Добавлено: <b>{data['category']} · {data['subgroup']}{size_txt}</b> | {data['price']} ₽ | {stock} шт",
         parse_mode="HTML", reply_markup=MAIN_KB
     )
+    await push_stats()
+
+
+# ── EDIT PRICE flow ───────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "edit_price")
+async def cb_edit_price(call: CallbackQuery, state: FSMContext):
+    await state.set_state(PriceFlow.choose_item)
+    await call.message.edit_text(
+        "Выбери позицию для изменения цены:",
+        reply_markup=items_picker_keyboard(db.get_all_items(), 0, "priceitem", "pricepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(PriceFlow.choose_item, F.data.startswith("pricepage:"))
+async def cb_price_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":")[1])
+    await call.message.edit_reply_markup(
+        reply_markup=items_picker_keyboard(db.get_all_items(), page, "priceitem", "pricepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(PriceFlow.choose_item, F.data.startswith("priceitem:"))
+async def cb_price_item(call: CallbackQuery, state: FSMContext):
+    item_id = int(call.data.split(":")[1])
+    item = db.get_item(item_id)
+    await state.update_data(item_id=item_id)
+    await state.set_state(PriceFlow.enter_price)
+    await call.message.edit_text(
+        f"<b>{variant_label(item)}</b>\n"
+        f"Текущая цена: {item['price']:,} ₽".replace(",", " ") +
+        "\n\nВведи новую цену (₽):",
+        parse_mode="HTML", reply_markup=None
+    )
+    await call.answer()
+
+
+@dp.message(PriceFlow.enter_price)
+async def msg_price_value(message: Message, state: FSMContext):
+    try:
+        price = int(message.text.strip().replace(" ", ""))
+        assert price > 0
+    except Exception:
+        await message.answer("Нужно целое число > 0")
+        return
+    data = await state.get_data()
+    db.update_price(data["item_id"], price)
+    item = db.get_item(data["item_id"])
+    await state.clear()
+    await message.answer(
+        f"✅ Цена обновлена: <b>{variant_label(item)}</b> → {price:,} ₽".replace(",", " "),
+        parse_mode="HTML", reply_markup=MAIN_KB
+    )
+    await push_stats()
+
+
+# ── HIDE / RESTORE flow ───────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "hide_item")
+async def cb_hide_item(call: CallbackQuery, state: FSMContext):
+    await state.set_state(HideFlow.choose_item)
+    await call.message.edit_text(
+        "Выбери позицию, которую скрыть из продажи:",
+        reply_markup=items_picker_keyboard(db.get_all_items(), 0, "hideitem", "hidepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(HideFlow.choose_item, F.data.startswith("hidepage:"))
+async def cb_hide_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":")[1])
+    await call.message.edit_reply_markup(
+        reply_markup=items_picker_keyboard(db.get_all_items(), page, "hideitem", "hidepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(HideFlow.choose_item, F.data.startswith("hideitem:"))
+async def cb_hide_choose(call: CallbackQuery, state: FSMContext):
+    item_id = int(call.data.split(":")[1])
+    item = db.get_item(item_id)
+    await state.update_data(item_id=item_id)
+    await state.set_state(HideFlow.confirm)
+    await call.message.edit_text(
+        f"Скрыть из продажи: <b>{variant_label(item)}</b>?\n\n"
+        "Позиция перестанет показываться в меню продажи, но история продаж сохранится. "
+        "Вернуть можно через «Управление каталогом → Вернуть скрытую».",
+        parse_mode="HTML",
+        reply_markup=kb([("🙈 Скрыть", "hide_confirm"), ("❌ Отмена", "cancel")])
+    )
+    await call.answer()
+
+
+@dp.callback_query(HideFlow.confirm, F.data == "hide_confirm")
+async def cb_hide_confirm(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    item = db.get_item(data["item_id"])
+    db.set_active(data["item_id"], False)
+    await state.clear()
+    await call.message.edit_text(
+        f"✅ Скрыто: <b>{variant_label(item)}</b>",
+        parse_mode="HTML", reply_markup=None
+    )
+    await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+    await call.answer()
+    await push_stats()
+
+
+@dp.callback_query(F.data == "restore_item")
+async def cb_restore_item(call: CallbackQuery, state: FSMContext):
+    hidden = db.get_hidden_items()
+    if not hidden:
+        await call.answer("Скрытых позиций нет", show_alert=True)
+        return
+    await state.set_state(RestoreFlow.choose_item)
+    await call.message.edit_text(
+        "Выбери позицию для возврата:",
+        reply_markup=items_picker_keyboard(hidden, 0, "restoreitem", "restorepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(RestoreFlow.choose_item, F.data.startswith("restorepage:"))
+async def cb_restore_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":")[1])
+    await call.message.edit_reply_markup(
+        reply_markup=items_picker_keyboard(db.get_hidden_items(), page, "restoreitem", "restorepage")
+    )
+    await call.answer()
+
+
+@dp.callback_query(RestoreFlow.choose_item, F.data.startswith("restoreitem:"))
+async def cb_restore_choose(call: CallbackQuery, state: FSMContext):
+    item_id = int(call.data.split(":")[1])
+    db.set_active(item_id, True)
+    item = db.get_item(item_id)
+    await state.clear()
+    await call.message.edit_text(
+        f"✅ Возвращено: <b>{variant_label(item)}</b>\nОстаток сейчас: {item['stock']} шт",
+        parse_mode="HTML", reply_markup=None
+    )
+    await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+    await call.answer()
     await push_stats()
 
 
