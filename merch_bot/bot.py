@@ -1,7 +1,8 @@
 import os
+import time
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton
@@ -22,6 +23,45 @@ CHANNEL_ID = int(os.environ["CHANNEL_ID"])
 
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher(storage=MemoryStorage())
+
+
+# ── access control: доступ только у участников канала статистики ───────────────
+
+ALLOWED_STATUSES = {"creator", "administrator", "member", "restricted"}
+ACCESS_TTL = 60  # сек, кэш положительных проверок
+_access_cache = {}  # user_id -> timestamp
+
+
+async def _has_access(user_id: int) -> bool:
+    now = time.time()
+    ts = _access_cache.get(user_id)
+    if ts and now - ts < ACCESS_TTL:
+        return True
+    try:
+        member = await bot.get_chat_member(CHANNEL_ID, user_id)
+        if member.status in ALLOWED_STATUSES:
+            _access_cache[user_id] = now
+            return True
+    except Exception as e:
+        log.warning(f"access check failed for {user_id}: {e}")
+    return False
+
+
+class AccessMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        user = data.get("event_from_user")
+        if user and await _has_access(user.id):
+            return await handler(event, data)
+        deny = "Нет доступа. Чтобы пользоваться ботом, тебя нужно добавить в канал статистики."
+        if isinstance(event, CallbackQuery):
+            await event.answer(deny, show_alert=True)
+        elif isinstance(event, Message):
+            await event.answer(deny)
+        return None
+
+
+dp.message.middleware(AccessMiddleware())
+dp.callback_query.middleware(AccessMiddleware())
 
 
 # ── FSM states ────────────────────────────────────────────────────────────────
