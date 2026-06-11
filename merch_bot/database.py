@@ -97,6 +97,13 @@ def seed_initial_data():
     add("Жетон", "Хоупкор",   [None], 1000, [30])
     add("Жетон", "Депрессия", [None], 1000, [3])
 
+    add("Сумочка", "черный",     [None], 1500, [0])
+    add("Сумочка", "бежевый",    [None], 1500, [0])
+    add("Сумочка", "розовый",    [None], 1500, [0])
+    add("Сумочка", "коричневый", [None], 1500, [0])
+    add("Сумочка", "зеленый",    [None], 1500, [0])
+    add("Сумочка", "синий",      [None], 1500, [0])
+
     c.executemany(
         "INSERT INTO items (category, subgroup, size, price, stock) VALUES (?,?,?,?,?)",
         items
