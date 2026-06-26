@@ -126,6 +126,11 @@ def _fmt_recent() -> str:
     return "\n".join(lines)
 
 
+def format_stock() -> str:
+    """Тот же текст остатков, что в канале — для кнопки «Остатки» в боте."""
+    return _fmt_stock()
+
+
 async def update_channel_stats(bot: Bot, channel_id: int):
     sections = {
         "revenue": _fmt_revenue,

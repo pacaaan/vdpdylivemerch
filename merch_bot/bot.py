@@ -14,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 import database as db
-from channel_stats import update_channel_stats
+from channel_stats import update_channel_stats, format_stock
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
@@ -459,24 +459,8 @@ async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "view_stock")
 async def cb_view_stock(call: CallbackQuery, state: FSMContext):
-    rows = db.get_stats_by_item()
-    lines = ["📦 <b>Остатки</b>\n"]
-
-    current_cat = None
-    for r in rows:
-        if r["category"] != current_cat:
-            if current_cat:
-                lines.append("")
-            lines.append(f"<b>{r['category']}</b>")
-            current_cat = r["category"]
-        label = r["subgroup"]
-        if r["size"]:
-            label += f" · {r['size']}"
-        stock_str = str(r["stock"]) if r["stock"] > 0 else "0 ⚠️"
-        lines.append(f"  {label}: {stock_str} шт (продано {r['sold']})")
-
     await call.message.edit_text(
-        "\n".join(lines), parse_mode="HTML",
+        format_stock(), parse_mode="HTML",
         reply_markup=kb([("🔧 Обновить остаток", "update_stock"), ("◀️ Меню", "back_menu")])
     )
     await call.answer()
