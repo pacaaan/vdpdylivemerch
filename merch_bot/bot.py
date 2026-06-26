@@ -2,6 +2,7 @@ import os
 import time
 import asyncio
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher, F, BaseMiddleware
 from aiogram.types import (
     Message, CallbackQuery,
@@ -84,6 +85,7 @@ class AddItemFlow(StatesGroup):
 
 class AddEventFlow(StatesGroup):
     name = State()
+    date = State()
 
 class StockFlow(StatesGroup):
     choose_item = State()
@@ -127,9 +129,29 @@ def variant_label(item) -> str:
     return " · ".join(parts)
 
 
+def _parse_date(text):
+    text = text.strip()
+    for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d.%m"):
+        try:
+            d = datetime.strptime(text, fmt)
+            if fmt == "%d.%m":
+                d = d.replace(year=datetime.now().year)
+            return d.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _fmt_date(iso):
+    try:
+        return datetime.strptime(iso, "%Y-%m-%d").strftime("%d.%m")
+    except Exception:
+        return iso or ""
+
+
 def event_keyboard():
     events = db.get_all_events()
-    rows = [[(e["name"], f"event:{e['id']}")] for e in events]
+    rows = [[(f"{e['name']} · {_fmt_date(e['event_date'])}", f"event:{e['id']}")] for e in events]
     rows.append([("❌ Отмена", "cancel")])
     return kb(*rows)
 
@@ -233,6 +255,14 @@ async def cb_back_menu(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "sell")
 async def cb_sell_start(call: CallbackQuery, state: FSMContext):
+    if not db.get_all_events():
+        await call.message.edit_text(
+            "Нет ближайших мероприятий. Добавь через «🎪 Добавить мероприятие».",
+            reply_markup=None
+        )
+        await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+        await call.answer()
+        return
     await state.set_state(SaleFlow.choose_event)
     await state.update_data(mode="sell")
     await call.message.edit_text("Выбери мероприятие:", reply_markup=event_keyboard())
@@ -241,6 +271,14 @@ async def cb_sell_start(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "discount")
 async def cb_discount_start(call: CallbackQuery, state: FSMContext):
+    if not db.get_all_events():
+        await call.message.edit_text(
+            "Нет ближайших мероприятий. Добавь через «🎪 Добавить мероприятие».",
+            reply_markup=None
+        )
+        await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+        await call.answer()
+        return
     await state.set_state(SaleFlow.choose_event)
     await state.update_data(mode="discount")
     await call.message.edit_text("Скидка. Выбери мероприятие:", reply_markup=event_keyboard())
@@ -738,16 +776,34 @@ async def cb_restore_choose(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "add_event")
 async def cb_add_event(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddEventFlow.name)
-    await call.message.edit_text("Введи название мероприятия:", reply_markup=None)
+    await call.message.edit_text(
+        "Название мероприятия (например «Самара, концерт»):",
+        reply_markup=None
+    )
     await call.answer()
 
 
 @dp.message(AddEventFlow.name)
 async def msg_event_name(message: Message, state: FSMContext):
-    name = message.text.strip()
-    db.add_event(name)
+    await state.update_data(ev_name=message.text.strip())
+    await state.set_state(AddEventFlow.date)
+    await message.answer("Дата мероприятия (ДД.ММ или ДД.ММ.ГГГГ):")
+
+
+@dp.message(AddEventFlow.date)
+async def msg_event_date(message: Message, state: FSMContext):
+    iso = _parse_date(message.text)
+    if not iso:
+        await message.answer("Не понял дату. Формат: 28.06 или 28.06.2026")
+        return
+    data = await state.get_data()
+    db.add_event(data["ev_name"], iso)
     await state.clear()
-    await message.answer(f"✅ Мероприятие «{name}» добавлено.", reply_markup=MAIN_KB)
+    await message.answer(
+        f"✅ Мероприятие «{data['ev_name']}» на {_fmt_date(iso)} добавлено.\n"
+        "Оно само исчезнет из списка через неделю после даты.",
+        reply_markup=MAIN_KB
+    )
 
 
 # ── REFRESH STATS ─────────────────────────────────────────────────────────────

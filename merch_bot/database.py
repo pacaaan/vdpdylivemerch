@@ -31,6 +31,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            event_date TEXT,
             active INTEGER NOT NULL DEFAULT 1
         )
     """)
@@ -53,6 +54,11 @@ def init_db():
             message_id INTEGER
         )
     """)
+
+    # миграция: добавить event_date, если база старая (на случай подключённого volume)
+    cols = [r[1] for r in c.execute("PRAGMA table_info(events)").fetchall()]
+    if "event_date" not in cols:
+        c.execute("ALTER TABLE events ADD COLUMN event_date TEXT")
 
     conn.commit()
     conn.close()
@@ -108,8 +114,16 @@ def seed_initial_data():
         items
     )
 
-    events = [("Концерт",), ("Маркет",)]
-    c.executemany("INSERT INTO events (name) VALUES (?)", events)
+    # Стартовые мероприятия (новые добавляются через бота).
+    # Каждое само исчезает из списка через 7 дней после даты.
+    events = [
+        ("Самара — Стереолето",  "2026-06-27"),
+        ("Питер — Продай душу",  "2026-06-28"),
+        ("Москва — Волнения",    "2026-07-04"),
+        ("Владимир — Городской", "2026-07-05"),
+        ("Балаково — Смена",     "2026-08-01"),
+    ]
+    c.executemany("INSERT INTO events (name, event_date) VALUES (?,?)", events)
 
     conn.commit()
     conn.close()
@@ -240,17 +254,25 @@ def sell_get_terminal_item(category, subgroup):
 # ---------- events ----------
 
 def get_all_events():
+    """Только мероприятия, дата которых не прошла больше чем на 7 дней."""
     conn = get_conn()
-    rows = conn.execute(
-        "SELECT * FROM events WHERE active=1 ORDER BY name"
-    ).fetchall()
+    rows = conn.execute("""
+        SELECT * FROM events
+        WHERE active=1
+          AND event_date IS NOT NULL
+          AND date(event_date) >= date('now', '-7 days')
+        ORDER BY event_date
+    """).fetchall()
     conn.close()
     return rows
 
 
-def add_event(name):
+def add_event(name, event_date):
     conn = get_conn()
-    conn.execute("INSERT INTO events (name) VALUES (?)", (name,))
+    conn.execute(
+        "INSERT INTO events (name, event_date) VALUES (?,?)",
+        (name, event_date)
+    )
     conn.commit()
     conn.close()
 
