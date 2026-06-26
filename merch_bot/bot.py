@@ -29,7 +29,7 @@ dp  = Dispatcher(storage=MemoryStorage())
 # ── access control: доступ только у участников канала статистики ───────────────
 
 ALLOWED_STATUSES = {"creator", "administrator", "member", "restricted"}
-ACCESS_TTL = 60  # сек, кэш положительных проверок
+ACCESS_TTL = 300  # сек, кэш положительных проверок (5 мин — меньше запросов к Telegram)
 _access_cache = {}  # user_id -> timestamp
 
 
@@ -217,6 +217,7 @@ MAIN_KB = kb(
 )
 
 MANAGE_KB = kb(
+    [("📦 Обновить остаток", "update_stock")],
     [("💰 Изменить цену", "edit_price")],
     [("🙈 Скрыть позицию", "hide_item"), ("👁 Вернуть скрытую", "restore_item")],
     [("◀️ Меню", "back_menu")],
