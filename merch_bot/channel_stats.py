@@ -10,12 +10,14 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from database import (
     get_stats_overall, get_stats_by_event, get_sales_by_category,
+    get_sales_by_payment,
     get_stats_by_item, get_last_sales,
     get_channel_message_id, set_channel_message_id
 )
 from datetime import datetime
 
 SIZE_ORDER = {"M": 1, "L": 2, "XL": 3, "XXL": 4, "ЖЕН": 1, "МУЖ": 2}
+PAY_LABEL = {"cash": "Наличка", "transfer": "Перевод", "tip": "Чаевые"}
 
 
 def _size_key(size):
@@ -52,6 +54,15 @@ def _fmt_revenue() -> str:
         lines += ["", "<b>Продано по группам:</b>"]
         for r in by_cat:
             lines.append(f"  {r['category']} — {r['units']} шт")
+
+    by_pay = [r for r in get_sales_by_payment() if r["units"] > 0]
+    if by_pay:
+        lines += ["", "<b>По оплате:</b>"]
+        for r in by_pay:
+            label = PAY_LABEL.get(r["payment"], "—")
+            lines.append(
+                f"  {label}: {r['revenue']:,} ₽".replace(",", " ")
+            )
 
     lines += ["", f"<i>Обновлено: {datetime.now().strftime('%d.%m %H:%M')}</i>"]
     return "\n".join(lines)

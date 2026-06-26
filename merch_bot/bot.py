@@ -73,6 +73,7 @@ class SaleFlow(StatesGroup):
     choose_subgroup = State()
     choose_size     = State()
     enter_amount    = State()
+    choose_payment  = State()
     confirm         = State()
 
 class AddItemFlow(StatesGroup):
@@ -223,6 +224,15 @@ MANAGE_KB = kb(
 
 # Кнопка возврата в меню для текстовых шагов (ввод числа/текста)
 CANCEL_KB = kb([("◀️ В меню", "back_menu")])
+
+# Способы оплаты
+PAYMENT_KB = kb(
+    [("💵 Наличка", "pay:cash")],
+    [("💳 Перевод", "pay:transfer")],
+    [("🎁 Чаевые", "pay:tip")],
+    [("❌ Отмена", "cancel")],
+)
+PAY_LABEL = {"cash": "Наличка", "transfer": "Перевод", "tip": "Чаевые"}
 
 
 @dp.callback_query(F.data == "manage")
@@ -380,7 +390,31 @@ async def _go_confirm(call, state, item_id):
             parse_mode="HTML", reply_markup=CANCEL_KB
         )
     else:
-        await _show_confirm(call.message, state, edit=True)
+        await _ask_payment(call.message, state, edit=True)
+
+
+async def _ask_payment(msg, state, edit: bool):
+    data = await state.get_data()
+    item = db.get_item(data["item_id"])
+    price = data.get("price") or item["price"]
+    text = (
+        f"<b>{variant_label(item)}</b>\n"
+        f"Сумма: {price:,} ₽".replace(",", " ") +
+        "\n\nСпособ оплаты:"
+    )
+    await state.set_state(SaleFlow.choose_payment)
+    if edit:
+        await msg.edit_text(text, parse_mode="HTML", reply_markup=PAYMENT_KB)
+    else:
+        await msg.answer(text, parse_mode="HTML", reply_markup=PAYMENT_KB)
+
+
+@dp.callback_query(SaleFlow.choose_payment, F.data.startswith("pay:"))
+async def cb_payment(call: CallbackQuery, state: FSMContext):
+    method = call.data.split(":")[1]
+    await state.update_data(payment=method)
+    await _show_confirm(call.message, state, edit=True)
+    await call.answer()
 
 
 async def _show_confirm(msg, state, edit: bool):
@@ -388,6 +422,7 @@ async def _show_confirm(msg, state, edit: bool):
     item = db.get_item(data["item_id"])
     price = data.get("price") or item["price"]
     is_disc = data.get("mode") == "discount"
+    pay = data.get("payment")
 
     events = {e["id"]: e["name"] for e in db.get_all_events()}
     event_name = events.get(data["event_id"], "?")
@@ -406,6 +441,7 @@ async def _show_confirm(msg, state, edit: bool):
         f"Позиция: <b>{variant_label(item)}</b>\n"
         f"Мероприятие: <b>{event_name}</b>\n"
         f"{price_line}\n"
+        f"Оплата: <b>{PAY_LABEL.get(pay, '—')}</b>\n"
         f"Остаток сейчас: {item['stock']} шт"
     )
     markup = kb([("✅ Подтвердить", "confirm_sale"), ("❌ Отмена", "cancel")])
@@ -425,7 +461,7 @@ async def msg_sale_amount(message: Message, state: FSMContext):
         await message.answer("Нужно целое число > 0", reply_markup=CANCEL_KB)
         return
     await state.update_data(price=price)
-    await _show_confirm(message, state, edit=False)
+    await _ask_payment(message, state, edit=False)
 
 
 @dp.callback_query(SaleFlow.confirm, F.data == "confirm_sale")
@@ -433,6 +469,7 @@ async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     item = db.get_item(data["item_id"])
     price = data.get("price") or item["price"]
+    payment = data.get("payment")
     sold_by = call.from_user.first_name or call.from_user.username or "?"
 
     db.record_sale(
@@ -440,7 +477,8 @@ async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
         event_id=data["event_id"],
         quantity=1,
         price=price,
-        sold_by=sold_by
+        sold_by=sold_by,
+        payment=payment
     )
     is_disc = data.get("mode") == "discount"
     await state.clear()
@@ -449,7 +487,8 @@ async def cb_sell_confirm(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
         f"✅ Продажа{tag} записана: <b>{variant_label(item)}</b>\n"
         f"Сумма: {price:,} ₽".replace(",", " ") +
-        f"\nОсталось: {max(0, item['stock'] - 1)} шт",
+        f" · {PAY_LABEL.get(payment, '—')}\n"
+        f"Осталось: {max(0, item['stock'] - 1)} шт",
         parse_mode="HTML", reply_markup=None
     )
     await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)

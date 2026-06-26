@@ -43,6 +43,7 @@ def init_db():
             event_id INTEGER NOT NULL,
             quantity INTEGER NOT NULL DEFAULT 1,
             price INTEGER NOT NULL,
+            payment TEXT,
             sold_by TEXT,
             sold_at TEXT NOT NULL
         )
@@ -55,10 +56,14 @@ def init_db():
         )
     """)
 
-    # миграция: добавить event_date, если база старая (на случай подключённого volume)
+    # миграции для старых баз (на случай подключённого volume)
     cols = [r[1] for r in c.execute("PRAGMA table_info(events)").fetchall()]
     if "event_date" not in cols:
         c.execute("ALTER TABLE events ADD COLUMN event_date TEXT")
+
+    scols = [r[1] for r in c.execute("PRAGMA table_info(sales)").fetchall()]
+    if "payment" not in scols:
+        c.execute("ALTER TABLE sales ADD COLUMN payment TEXT")
 
     conn.commit()
     conn.close()
@@ -329,11 +334,11 @@ def add_event(name, event_date):
 
 # ---------- sales ----------
 
-def record_sale(item_id, event_id, quantity, price, sold_by):
+def record_sale(item_id, event_id, quantity, price, sold_by, payment=None):
     conn = get_conn()
     conn.execute(
-        "INSERT INTO sales (item_id, event_id, quantity, price, sold_by, sold_at) VALUES (?,?,?,?,?,?)",
-        (item_id, event_id, quantity, price, sold_by, datetime.now().isoformat())
+        "INSERT INTO sales (item_id, event_id, quantity, price, payment, sold_by, sold_at) VALUES (?,?,?,?,?,?,?)",
+        (item_id, event_id, quantity, price, payment, sold_by, datetime.now().isoformat())
     )
     conn.execute(
         "UPDATE items SET stock = MAX(0, stock - ?) WHERE id=?",
@@ -341,6 +346,19 @@ def record_sale(item_id, event_id, quantity, price, sold_by):
     )
     conn.commit()
     conn.close()
+
+
+def get_sales_by_payment():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT payment,
+               COALESCE(SUM(quantity * price), 0) AS revenue,
+               COALESCE(SUM(quantity), 0) AS units
+        FROM sales
+        GROUP BY payment
+    """).fetchall()
+    conn.close()
+    return rows
 
 
 def get_stats_overall():
