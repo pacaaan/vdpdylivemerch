@@ -1,18 +1,25 @@
 """
 Обновляет (или создаёт) три сообщения в канале статистики:
-  revenue — выручка итого + по мероприятиям
-  stock   — остатки и кол-во продаж по позициям
+  revenue — выручка итого + по мероприятиям + продано по группам
+  stock   — остатки (только в наличии, сгруппировано)
   recent  — последние 10 продаж
 """
 
+from collections import OrderedDict
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from database import (
-    get_stats_overall, get_stats_by_event,
+    get_stats_overall, get_stats_by_event, get_sales_by_category,
     get_stats_by_item, get_last_sales,
     get_channel_message_id, set_channel_message_id
 )
 from datetime import datetime
+
+SIZE_ORDER = {"M": 1, "L": 2, "XL": 3, "XXL": 4, "ЖЕН": 1, "МУЖ": 2}
+
+
+def _size_key(size):
+    return SIZE_ORDER.get(size, 99)
 
 
 def _variant(category, subgroup, size):
@@ -24,48 +31,77 @@ def _variant(category, subgroup, size):
 
 def _fmt_revenue() -> str:
     overall = get_stats_overall()
-    by_event = get_stats_by_event()
+    by_event = [r for r in get_stats_by_event() if r["units"] > 0]
+    by_cat = get_sales_by_category()
 
     lines = [
         "💰 <b>ВЫРУЧКА</b>",
         "",
         f"Итого продаж:  <b>{overall['units']} шт</b>",
         f"Итого выручка: <b>{overall['revenue']:,} ₽</b>".replace(",", " "),
-        "",
-        "<b>По мероприятиям:</b>",
     ]
-    for row in by_event:
-        lines.append(
-            f"  {row['event']}: {row['units']} шт → {row['revenue']:,} ₽".replace(",", " ")
-        )
+
+    if by_event:
+        lines += ["", "<b>По мероприятиям:</b>"]
+        for r in by_event:
+            lines.append(
+                f"  {r['event']}: {r['units']} шт → {r['revenue']:,} ₽".replace(",", " ")
+            )
+
+    if by_cat:
+        lines += ["", "<b>Продано по группам:</b>"]
+        for r in by_cat:
+            lines.append(f"  {r['category']} — {r['units']} шт")
 
     lines += ["", f"<i>Обновлено: {datetime.now().strftime('%d.%m %H:%M')}</i>"]
     return "\n".join(lines)
 
 
 def _fmt_stock() -> str:
-    rows = get_stats_by_item()
+    rows = [r for r in get_stats_by_item() if r["stock"] > 0]
 
-    lines = ["📦 <b>ОСТАТКИ И ПРОДАЖИ</b>", ""]
-
-    current_cat = None
+    # category -> list of rows
+    cats = OrderedDict()
     for r in rows:
-        if r["category"] != current_cat:
-            if current_cat is not None:
-                lines.append("")
-            lines.append(f"<b>{r['category']}</b>")
-            current_cat = r["category"]
+        cats.setdefault(r["category"], []).append(r)
 
-        label = r["subgroup"]
-        if r["size"]:
-            label += f" · {r['size']}"
+    lines = ["📦 <b>ОСТАТКИ</b>", ""]
 
-        stock = r["stock"]
-        sold = r["sold"]
-        stock_str = f"<b>{stock}</b>" if stock > 0 else "<b>0</b> ⚠️"
-        lines.append(f"  {label}: осталось {stock_str}, продано {sold}")
+    for cat, items in cats.items():
+        lines.append(f"<b>{cat}</b>")
 
-    lines += ["", f"<i>Обновлено: {datetime.now().strftime('%d.%m %H:%M')}</i>"]
+        if cat == "Футболка":
+            # подгруппа по бренду (первое слово subgroup): VODOPADY / Депрессия
+            brands = OrderedDict()
+            for r in items:
+                parts = r["subgroup"].split(" ", 1)
+                brand = parts[0]
+                color = parts[1] if len(parts) > 1 else r["subgroup"]
+                brands.setdefault(brand, OrderedDict())
+                brands[brand].setdefault(color, []).append((r["size"], r["stock"]))
+
+            for brand, colors in brands.items():
+                lines.append(f"  <u>{brand}</u>")
+                for color, sizes in colors.items():
+                    sizes.sort(key=lambda x: _size_key(x[0]))
+                    sz = ", ".join(f"{s} - {st}" for s, st in sizes)
+                    lines.append(f"    {color.capitalize()} ({sz})")
+        else:
+            subs = OrderedDict()
+            for r in items:
+                subs.setdefault(r["subgroup"], []).append((r["size"], r["stock"]))
+
+            for sub, sizes in subs.items():
+                if len(sizes) == 1 and sizes[0][0] is None:
+                    lines.append(f"  {sub} - {sizes[0][1]} шт")
+                else:
+                    sizes.sort(key=lambda x: _size_key(x[0]))
+                    sz = ", ".join(f"{s} - {st}" for s, st in sizes)
+                    lines.append(f"  {sub} ({sz})")
+
+        lines.append("")
+
+    lines += [f"<i>Обновлено: {datetime.now().strftime('%d.%m %H:%M')}</i>"]
     return "\n".join(lines)
 
 
