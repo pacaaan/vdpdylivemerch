@@ -414,6 +414,52 @@ def get_last_sales(limit=10):
     return rows
 
 
+def get_last_sale():
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT s.id, s.item_id, s.quantity, s.price, s.sold_by, s.sold_at,
+               i.category, i.subgroup, i.size, i.stock,
+               e.name AS event
+        FROM sales s
+        JOIN items i ON i.id = s.item_id
+        JOIN events e ON e.id = s.event_id
+        ORDER BY s.id DESC
+        LIMIT 1
+    """).fetchone()
+    conn.close()
+    return row
+
+
+def get_sale(sale_id):
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT s.id, s.item_id, s.quantity, s.price,
+               i.category, i.subgroup, i.size
+        FROM sales s
+        JOIN items i ON i.id = s.item_id
+        WHERE s.id = ?
+    """, (sale_id,)).fetchone()
+    conn.close()
+    return row
+
+
+def delete_sale(sale_id):
+    """Удаляет продажу и возвращает остаток на склад. Одно соединение."""
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT item_id, quantity FROM sales WHERE id=?", (sale_id,)
+    ).fetchone()
+    if row:
+        conn.execute(
+            "UPDATE items SET stock = stock + ? WHERE id=?",
+            (row["quantity"], row["item_id"])
+        )
+        conn.execute("DELETE FROM sales WHERE id=?", (sale_id,))
+        conn.commit()
+    conn.close()
+    return row is not None
+
+
 # ---------- channel message tracking ----------
 
 def get_channel_message_id(key):

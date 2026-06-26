@@ -208,7 +208,7 @@ async def push_stats():
 
 MAIN_KB = kb(
     [("🛍 Продал", "sell"), ("💸 Скидка", "discount")],
-    [("📦 Остатки", "view_stock")],
+    [("📦 Остатки", "view_stock"), ("↩️ Отменить продажу", "undo_sale")],
     [("➕ Добавить позицию", "add_item"), ("🎪 Добавить мероприятие", "add_event")],
     [("⚙️ Управление каталогом", "manage")],
     [("📊 Обновить статистику", "refresh_stats")],
@@ -859,6 +859,66 @@ async def msg_event_date(message: Message, state: FSMContext):
         "Оно само исчезнет из списка через неделю после даты.",
         reply_markup=MAIN_KB
     )
+
+
+# ── UNDO LAST SALE ────────────────────────────────────────────────────────────
+
+@dp.callback_query(F.data == "undo_sale")
+async def cb_undo_sale(call: CallbackQuery, state: FSMContext):
+    last = db.get_last_sale()
+    if not last:
+        await call.answer("Продаж пока нет", show_alert=True)
+        return
+
+    variant = last["category"] + " · " + last["subgroup"]
+    if last["size"]:
+        variant += " · " + last["size"]
+    dt = last["sold_at"][:16].replace("T", " ")
+    by = f" ({last['sold_by']})" if last["sold_by"] else ""
+
+    text = (
+        "Отменить последнюю продажу?\n\n"
+        f"Позиция: <b>{variant}</b>\n"
+        f"Сумма: {last['price']:,} ₽".replace(",", " ") + "\n"
+        f"Мероприятие: {last['event']}\n"
+        f"Когда: {dt}{by}\n\n"
+        f"Остаток вернётся: {last['stock']} → {last['stock'] + last['quantity']} шт"
+    )
+    await call.message.edit_text(
+        text, parse_mode="HTML",
+        reply_markup=kb([
+            ("↩️ Да, отменить", f"undo_confirm:{last['id']}"),
+            ("◀️ В меню", "back_menu")
+        ])
+    )
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("undo_confirm:"))
+async def cb_undo_confirm(call: CallbackQuery, state: FSMContext):
+    sale_id = int(call.data.split(":")[1])
+    sale = db.get_sale(sale_id)
+
+    if not sale:
+        await call.message.edit_text("Эта продажа уже отменена.", reply_markup=None)
+        await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+        await call.answer()
+        return
+
+    variant = sale["category"] + " · " + sale["subgroup"]
+    if sale["size"]:
+        variant += " · " + sale["size"]
+
+    db.delete_sale(sale_id)
+
+    await call.message.edit_text(
+        f"↩️ Продажа отменена: <b>{variant}</b>\n"
+        f"Остаток возвращён на склад.",
+        parse_mode="HTML", reply_markup=None
+    )
+    await call.message.answer("Выбери действие:", reply_markup=MAIN_KB)
+    await call.answer()
+    await push_stats()
 
 
 # ── REFRESH STATS ─────────────────────────────────────────────────────────────
