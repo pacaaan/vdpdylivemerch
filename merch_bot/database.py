@@ -251,6 +251,56 @@ def sell_get_terminal_item(category, subgroup):
     return row
 
 
+# ---------- catalog navigation (включая позиции с нулевым остатком) ----------
+
+def cat_get_categories():
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT category FROM items WHERE active=1 GROUP BY category ORDER BY category"
+    ).fetchall()
+    conn.close()
+    return [r["category"] for r in rows]
+
+
+def cat_get_subgroups(category):
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT subgroup,
+               MAX(CASE WHEN size IS NOT NULL THEN 1 ELSE 0 END) AS has_size
+        FROM items
+        WHERE active=1 AND category=?
+        GROUP BY subgroup
+        ORDER BY subgroup
+    """, (category,)).fetchall()
+    conn.close()
+    return [(r["subgroup"], r["has_size"]) for r in rows]
+
+
+def cat_get_sized_items(category, subgroup):
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT * FROM items
+        WHERE active=1 AND category=? AND subgroup=? AND size IS NOT NULL
+        ORDER BY
+          CASE size
+            WHEN 'M' THEN 1 WHEN 'L' THEN 2 WHEN 'XL' THEN 3 WHEN 'XXL' THEN 4
+            WHEN 'ЖЕН' THEN 1 WHEN 'МУЖ' THEN 2 ELSE 99 END
+    """, (category, subgroup)).fetchall()
+    conn.close()
+    return [(r["id"], r["size"], r["stock"]) for r in rows]
+
+
+def cat_get_terminal_item(category, subgroup):
+    conn = get_conn()
+    row = conn.execute("""
+        SELECT * FROM items
+        WHERE active=1 AND category=? AND subgroup=? AND size IS NULL
+        LIMIT 1
+    """, (category, subgroup)).fetchone()
+    conn.close()
+    return row
+
+
 # ---------- events ----------
 
 def get_all_events():

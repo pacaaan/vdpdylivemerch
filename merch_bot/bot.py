@@ -88,8 +88,10 @@ class AddEventFlow(StatesGroup):
     date = State()
 
 class StockFlow(StatesGroup):
-    choose_item = State()
-    enter_qty   = State()
+    choose_category = State()
+    choose_subgroup = State()
+    choose_size     = State()
+    enter_qty       = State()
 
 class PriceFlow(StatesGroup):
     choose_item = State()
@@ -174,10 +176,6 @@ def size_keyboard(sized):
     return kb(*rows)
 
 
-def all_items_keyboard(page=0, page_size=8):
-    return items_picker_keyboard(db.get_all_items(), page, "stockitem", "stockpage", page_size)
-
-
 def items_picker_keyboard(items, page, item_prefix, page_prefix, page_size=8):
     start = page * page_size
     chunk = items[start: start + page_size]
@@ -222,6 +220,9 @@ MANAGE_KB = kb(
     [("🙈 Скрыть позицию", "hide_item"), ("👁 Вернуть скрытую", "restore_item")],
     [("◀️ Меню", "back_menu")],
 )
+
+# Кнопка возврата в меню для текстовых шагов (ввод числа/текста)
+CANCEL_KB = kb([("◀️ В меню", "back_menu")])
 
 
 @dp.callback_query(F.data == "manage")
@@ -376,7 +377,7 @@ async def _go_confirm(call, state, item_id):
             f"<b>{variant_label(item)}</b>\n"
             f"Розница: {item['price']:,} ₽".replace(",", " ") +
             "\n\nВведи сумму продажи со скидкой (₽):",
-            parse_mode="HTML", reply_markup=None
+            parse_mode="HTML", reply_markup=CANCEL_KB
         )
     else:
         await _show_confirm(call.message, state, edit=True)
@@ -421,7 +422,7 @@ async def msg_sale_amount(message: Message, state: FSMContext):
         price = int(message.text.strip().replace(" ", ""))
         assert price > 0
     except Exception:
-        await message.answer("Нужно целое число > 0")
+        await message.answer("Нужно целое число > 0", reply_markup=CANCEL_KB)
         return
     await state.update_data(price=price)
     await _show_confirm(message, state, edit=False)
@@ -467,33 +468,102 @@ async def cb_view_stock(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# ── UPDATE STOCK flow ─────────────────────────────────────────────────────────
+# ── UPDATE STOCK flow (иерархия: тип → вариант → размер → количество) ──────────
+
+def stock_category_keyboard(cats):
+    rows = [[(c, f"scat:{i}")] for i, c in enumerate(cats)]
+    rows.append([("◀️ В меню", "back_menu")])
+    return kb(*rows)
+
+
+def stock_subgroup_keyboard(subs):
+    rows = [[(s[0], f"ssub:{i}")] for i, s in enumerate(subs)]
+    rows.append([("⬅️ Назад", "sback_cat"), ("◀️ В меню", "back_menu")])
+    return kb(*rows)
+
+
+def stock_size_keyboard(sized):
+    rows = [[(f"{size} [{stock}]", f"sitem:{iid}")] for (iid, size, stock) in sized]
+    rows.append([("⬅️ Назад", "sback_sub"), ("◀️ В меню", "back_menu")])
+    return kb(*rows)
+
 
 @dp.callback_query(F.data == "update_stock")
 async def cb_update_stock_start(call: CallbackQuery, state: FSMContext):
-    await state.set_state(StockFlow.choose_item)
-    await call.message.edit_text("Выбери позицию для обновления остатка:", reply_markup=all_items_keyboard(0))
+    cats = db.cat_get_categories()
+    await state.update_data(scats=cats)
+    await state.set_state(StockFlow.choose_category)
+    await call.message.edit_text("Обновить остаток. Выбери тип:", reply_markup=stock_category_keyboard(cats))
     await call.answer()
 
 
-@dp.callback_query(StockFlow.choose_item, F.data.startswith("stockpage:"))
-async def cb_stock_page(call: CallbackQuery, state: FSMContext):
-    page = int(call.data.split(":")[1])
-    await call.message.edit_reply_markup(reply_markup=all_items_keyboard(page))
+@dp.callback_query(StockFlow.choose_category, F.data.startswith("scat:"))
+async def cb_stock_category(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":")[1])
+    data = await state.get_data()
+    category = data["scats"][idx]
+    subs = db.cat_get_subgroups(category)
+    await state.update_data(scategory=category, ssubs=subs)
+    await state.set_state(StockFlow.choose_subgroup)
+    await call.message.edit_text(f"{category} — выбери вариант:", reply_markup=stock_subgroup_keyboard(subs))
     await call.answer()
 
 
-@dp.callback_query(StockFlow.choose_item, F.data.startswith("stockitem:"))
-async def cb_stock_item(call: CallbackQuery, state: FSMContext):
+@dp.callback_query(StockFlow.choose_subgroup, F.data == "sback_cat")
+async def cb_stock_back_cat(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(StockFlow.choose_category)
+    await call.message.edit_text("Обновить остаток. Выбери тип:", reply_markup=stock_category_keyboard(data["scats"]))
+    await call.answer()
+
+
+@dp.callback_query(StockFlow.choose_subgroup, F.data.startswith("ssub:"))
+async def cb_stock_subgroup(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":")[1])
+    data = await state.get_data()
+    subgroup, has_size = data["ssubs"][idx]
+    category = data["scategory"]
+
+    if has_size:
+        sized = db.cat_get_sized_items(category, subgroup)
+        await state.update_data(ssubgroup=subgroup, ssized=sized)
+        await state.set_state(StockFlow.choose_size)
+        await call.message.edit_text(
+            f"{category} · {subgroup} — выбери размер:",
+            reply_markup=stock_size_keyboard(sized)
+        )
+    else:
+        term = db.cat_get_terminal_item(category, subgroup)
+        await _stock_ask_qty(call, state, term["id"])
+    await call.answer()
+
+
+@dp.callback_query(StockFlow.choose_size, F.data == "sback_sub")
+async def cb_stock_back_sub(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    await state.set_state(StockFlow.choose_subgroup)
+    await call.message.edit_text(
+        f"{data['scategory']} — выбери вариант:",
+        reply_markup=stock_subgroup_keyboard(data["ssubs"])
+    )
+    await call.answer()
+
+
+@dp.callback_query(StockFlow.choose_size, F.data.startswith("sitem:"))
+async def cb_stock_size(call: CallbackQuery, state: FSMContext):
     item_id = int(call.data.split(":")[1])
+    await _stock_ask_qty(call, state, item_id)
+    await call.answer()
+
+
+async def _stock_ask_qty(call, state, item_id):
     item = db.get_item(item_id)
     await state.update_data(item_id=item_id)
     await state.set_state(StockFlow.enter_qty)
     await call.message.edit_text(
-        f"<b>{item_label(item)}</b>\n\nВведи новый остаток (целое число):",
-        parse_mode="HTML", reply_markup=None
+        f"<b>{item_label(item)}</b>\nТекущий остаток: {item['stock']} шт\n\nВведи новый остаток (целое число):",
+        parse_mode="HTML", reply_markup=CANCEL_KB
     )
-    await call.answer()
 
 
 @dp.message(StockFlow.enter_qty)
@@ -502,7 +572,7 @@ async def msg_stock_qty(message: Message, state: FSMContext):
         qty = int(message.text.strip())
         assert qty >= 0
     except Exception:
-        await message.answer("Нужно целое число ≥ 0")
+        await message.answer("Нужно целое число ≥ 0", reply_markup=CANCEL_KB)
         return
 
     data = await state.get_data()
@@ -511,7 +581,7 @@ async def msg_stock_qty(message: Message, state: FSMContext):
     await state.clear()
 
     await message.answer(
-        f"✅ Остаток обновлён: <b>{item_label(item)}</b>",
+        f"✅ Остаток обновлён: <b>{item_label(item)}</b> → {qty} шт",
         parse_mode="HTML", reply_markup=MAIN_KB
     )
     await push_stats()
@@ -540,7 +610,7 @@ async def cb_add_item_cat_existing(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddItemFlow.subgroup)
     await call.message.edit_text(
         f"Тип: <b>{category}</b>\n\nВариант (цвет или название, например «Депрессия черно-зеленая»):",
-        parse_mode="HTML", reply_markup=None
+        parse_mode="HTML", reply_markup=CANCEL_KB
     )
     await call.answer()
 
@@ -550,7 +620,7 @@ async def cb_add_item_cat_new(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddItemFlow.category_new)
     await call.message.edit_text(
         "Введи название нового типа (например «Худи»):",
-        reply_markup=None
+        reply_markup=CANCEL_KB
     )
     await call.answer()
 
@@ -559,14 +629,14 @@ async def cb_add_item_cat_new(call: CallbackQuery, state: FSMContext):
 async def msg_item_category_new(message: Message, state: FSMContext):
     await state.update_data(category=message.text.strip())
     await state.set_state(AddItemFlow.subgroup)
-    await message.answer("Вариант (цвет или название):")
+    await message.answer("Вариант (цвет или название):", reply_markup=CANCEL_KB)
 
 
 @dp.message(AddItemFlow.subgroup)
 async def msg_item_subgroup(message: Message, state: FSMContext):
     await state.update_data(subgroup=message.text.strip())
     await state.set_state(AddItemFlow.size)
-    await message.answer("Размер (M/L/XL/XXL или ЖЕН/МУЖ). Если размера нет — отправь «-»:")
+    await message.answer("Размер (M/L/XL/XXL или ЖЕН/МУЖ). Если размера нет — отправь «-»:", reply_markup=CANCEL_KB)
 
 
 @dp.message(AddItemFlow.size)
@@ -574,7 +644,7 @@ async def msg_item_size(message: Message, state: FSMContext):
     val = message.text.strip()
     await state.update_data(size=val if val != "-" else "")
     await state.set_state(AddItemFlow.price)
-    await message.answer("Цена в рублях (число):")
+    await message.answer("Цена в рублях (число):", reply_markup=CANCEL_KB)
 
 
 @dp.message(AddItemFlow.price)
@@ -583,11 +653,11 @@ async def msg_item_price(message: Message, state: FSMContext):
         price = int(message.text.strip())
         assert price > 0
     except Exception:
-        await message.answer("Нужно целое число > 0")
+        await message.answer("Нужно целое число > 0", reply_markup=CANCEL_KB)
         return
     await state.update_data(price=price)
     await state.set_state(AddItemFlow.stock)
-    await message.answer("Начальный остаток (число):")
+    await message.answer("Начальный остаток (число):", reply_markup=CANCEL_KB)
 
 
 @dp.message(AddItemFlow.stock)
@@ -596,7 +666,7 @@ async def msg_item_stock(message: Message, state: FSMContext):
         stock = int(message.text.strip())
         assert stock >= 0
     except Exception:
-        await message.answer("Нужно целое число ≥ 0")
+        await message.answer("Нужно целое число ≥ 0", reply_markup=CANCEL_KB)
         return
 
     data = await state.get_data()
@@ -642,7 +712,7 @@ async def cb_price_item(call: CallbackQuery, state: FSMContext):
         f"<b>{variant_label(item)}</b>\n"
         f"Текущая цена: {item['price']:,} ₽".replace(",", " ") +
         "\n\nВведи новую цену (₽):",
-        parse_mode="HTML", reply_markup=None
+        parse_mode="HTML", reply_markup=CANCEL_KB
     )
     await call.answer()
 
@@ -653,7 +723,7 @@ async def msg_price_value(message: Message, state: FSMContext):
         price = int(message.text.strip().replace(" ", ""))
         assert price > 0
     except Exception:
-        await message.answer("Нужно целое число > 0")
+        await message.answer("Нужно целое число > 0", reply_markup=CANCEL_KB)
         return
     data = await state.get_data()
     db.update_price(data["item_id"], price)
@@ -763,7 +833,7 @@ async def cb_add_event(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddEventFlow.name)
     await call.message.edit_text(
         "Название мероприятия (например «Самара, концерт»):",
-        reply_markup=None
+        reply_markup=CANCEL_KB
     )
     await call.answer()
 
@@ -772,14 +842,14 @@ async def cb_add_event(call: CallbackQuery, state: FSMContext):
 async def msg_event_name(message: Message, state: FSMContext):
     await state.update_data(ev_name=message.text.strip())
     await state.set_state(AddEventFlow.date)
-    await message.answer("Дата мероприятия (ДД.ММ или ДД.ММ.ГГГГ):")
+    await message.answer("Дата мероприятия (ДД.ММ или ДД.ММ.ГГГГ):", reply_markup=CANCEL_KB)
 
 
 @dp.message(AddEventFlow.date)
 async def msg_event_date(message: Message, state: FSMContext):
     iso = _parse_date(message.text)
     if not iso:
-        await message.answer("Не понял дату. Формат: 28.06 или 28.06.2026")
+        await message.answer("Не понял дату. Формат: 28.06 или 28.06.2026", reply_markup=CANCEL_KB)
         return
     data = await state.get_data()
     db.add_event(data["ev_name"], iso)
