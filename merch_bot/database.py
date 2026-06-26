@@ -75,26 +75,25 @@ def seed_initial_data():
 
     # Размеры футболок: [M, L, XL, XXL]
     TS = ["M", "L", "XL", "XXL"]
-    add("Футболка", "VODOPADY серая",            TS, 2000, [0, 0, 4, 2])
-    add("Футболка", "Депрессия бело-зеленая",    TS, 1700, [0, 0, 0, 4])
-    add("Футболка", "Депрессия сливочно-розовая",TS, 1700, [0, 0, 0, 6])
-    add("Футболка", "Депрессия черно-зеленая",   TS, 1700, [0, 1, 0, 0])
-    add("Футболка", "Депрессия черно-розовая",   TS, 1700, [0, 1, 2, 3])
+    add("Футболка", "VODOPADY серая",            TS, 2000, [0, 0, 3, 2])
+    add("Футболка", "VODOPADY белая",            TS, 2000, [0, 5, 3, 2])
+    add("Футболка", "VODOPADY сливочная",        TS, 2000, [0, 5, 3, 2])
+    add("Футболка", "Депрессия сливочно-розовая",TS, 1700, [0, 0, 0, 4])
+    add("Футболка", "Депрессия черно-розовая",   TS, 1700, [0, 0, 1, 2])
 
-    add("Кепка", "розовая",    [None], 1700, [10])
-    add("Кепка", "серая",      [None], 1700, [10])
-    add("Кепка", "фиолетовая", [None], 1700, [5])
-    add("Кепка", "желтая",     [None], 1700, [5])
+    add("Кепка", "розовый",    [None], 1700, [8])
+    add("Кепка", "желтый",     [None], 1700, [4])
+    add("Кепка", "серая",      [None], 1700, [5])
+    add("Кепка", "фиолетовая", [None], 1700, [3])
 
     add("Стикерпак", "белый",   [None], 350, [6])
     add("Стикерпак", "красный", [None], 350, [50])
 
     # Размеры носков: [ЖЕН, МУЖ]
     SOCK = ["ЖЕН", "МУЖ"]
-    add("Носки", "Травмы",  SOCK, 350, [0, 0])
     add("Носки", "Хоупкор", SOCK, 350, [50, 50])
 
-    add("Жетон", "Хоупкор",   [None], 1000, [30])
+    add("Жетон", "Хоупкор",   [None], 1000, [28])
     add("Жетон", "Депрессия", [None], 1000, [3])
 
     add("Сумочка", "черный",     [None], 1500, [0])
@@ -294,6 +293,20 @@ def get_stats_by_event():
         LEFT JOIN sales s ON s.event_id = e.id
         GROUP BY e.id
         ORDER BY revenue DESC
+    """).fetchall()
+    conn.close()
+    return rows
+
+
+def get_sales_by_category():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT i.category, SUM(s.quantity) AS units
+        FROM sales s
+        JOIN items i ON i.id = s.item_id
+        GROUP BY i.category
+        HAVING units > 0
+        ORDER BY units DESC
     """).fetchall()
     conn.close()
     return rows
